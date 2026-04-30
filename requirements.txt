@@ -1,0 +1,24 @@
+# Core dependencies for Douyin → Vietnamese Video Pipeline
+
+# Video/Audio Processing
+yt-dlp>=2024.1.0
+FFmpeg-python>=0.2.1
+openai-whisper>=20231114
+pysrt>=1.1.2
+edge-tts>=6.1.8
+
+# API & Language
+anthropic>=0.21.0
+python-dotenv>=1.0.0
+
+# Progress & Logging
+tqdm>=4.66.0
+requests>=2.31.0
+
+# Utilities
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# Optional: for better performance
+numpy>=1.24.0
+scipy>=1.10.0

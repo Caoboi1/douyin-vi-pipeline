@@ -1,0 +1,7 @@
+# Example batch URLs for Douyin videos
+# One URL per line
+# Lines starting with # are ignored
+
+https://www.douyin.com/video/7123456789012345678
+https://www.douyin.com/video/7123456789012345679
+https://www.douyin.com/video/7123456789012345680
