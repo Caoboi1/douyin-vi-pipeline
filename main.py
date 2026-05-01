@@ -10,6 +10,7 @@ Usage:
     python main.py batch <urls_file>
     python main.py preview <url>
     python main.py translate <srt_file>
+    python main.py config  # Configure TTS voice & quality
 """
 
 import os
@@ -21,7 +22,7 @@ import subprocess
 import time
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Literal
 from dataclasses import dataclass, asdict
 from dotenv import load_dotenv
 import google.generativeai as genai
@@ -51,6 +52,91 @@ logger = logging.getLogger(__name__)
 GEMINI_INPUT_COST = 0.075 / 1_000_000  # $0.075 per 1M input tokens
 GEMINI_OUTPUT_COST = 0.30 / 1_000_000  # $0.30 per 1M output tokens
 
+# TTS Voice Options
+TTS_VOICES = {
+    "hoai_my": {
+        "name": "HoaiMy Neuro (Female)",
+        "code": "vi-VN-HoaiMyNeural",
+        "description": "Tiếng nữ, tự nhiên, nhẹ nhàng",
+    },
+    "nam_minh": {
+        "name": "NamMinh Neuro (Male)",
+        "code": "vi-VN-NamMinhNeural",
+        "description": "Tiếng nam, sâu, chuyên nghiệp",
+    },
+}
+
+# Audio Quality Presets
+AUDIO_QUALITY = {
+    "low": {
+        "name": "Low (Fast)",
+        "bitrate": "64k",
+        "sample_rate": "22050",
+        "description": "Nhanh, chất lượng thấp, file nhỏ",
+    },
+    "medium": {
+        "name": "Medium (Balanced)",
+        "bitrate": "128k",
+        "sample_rate": "44100",
+        "description": "Cân bằng tốc độ & chất lượng",
+    },
+    "high": {
+        "name": "High (Quality)",
+        "bitrate": "192k",
+        "sample_rate": "48000",
+        "description": "Cao, chất lượng tốt, file lớn",
+    },
+}
+
+# Speech Rate Options
+SPEECH_RATES = {
+    "slow": {
+        "name": "Slow",
+        "value": "-20%",
+        "description": "Chậm (-20%)",
+    },
+    "normal": {
+        "name": "Normal",
+        "value": "+0%",
+        "description": "Bình thường",
+    },
+    "fast": {
+        "name": "Fast",
+        "value": "+20%",
+        "description": "Nhanh (+20%)",
+    },
+}
+
+# Config file path
+CONFIG_FILE = Path("tts_config.json")
+
+
+@dataclass
+class TTSConfig:
+    """TTS Configuration"""
+
+    voice: str = "hoai_my"
+    quality: str = "medium"
+    speech_rate: str = "normal"
+
+    def save(self):
+        """Save config to file"""
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(asdict(self), f, indent=2)
+        logger.info(f"✓ Config saved: {CONFIG_FILE}")
+
+    @staticmethod
+    def load() -> "TTSConfig":
+        """Load config from file or create default"""
+        if CONFIG_FILE.exists():
+            with open(CONFIG_FILE, "r") as f:
+                data = json.load(f)
+                return TTSConfig(**data)
+        else:
+            config = TTSConfig()
+            config.save()
+            return config
+
 
 @dataclass
 class ProcessingResult:
@@ -65,16 +151,21 @@ class ProcessingResult:
     processing_time: str = ""
     api_calls: int = 0
     estimated_cost_usd: float = 0.0
+    tts_voice: str = "hoai_my"
+    audio_quality: str = "medium"
 
 
 class DouyinPipeline:
     """Main pipeline for Douyin → Vietnamese video conversion"""
 
-    def __init__(self, output_base="./output"):
+    def __init__(self, output_base="./output", tts_config: Optional[TTSConfig] = None):
         self.output_base = Path(output_base)
         self.today = datetime.now().strftime("%Y-%m-%d")
         self.output_dir = self.output_base / self.today
         self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Load TTS config
+        self.tts_config = tts_config or TTSConfig.load()
 
         # Setup logging file
         self.log_file = self.output_dir / "pipeline.log"
@@ -99,6 +190,16 @@ class DouyinPipeline:
             f"💰 Cost: $0.01 per 10-min video (45x cheaper than Claude Sonnet!)"
         )
         logger.info(f"🌍 Free trial: $300/month for 60 days\n")
+
+        # Log TTS settings
+        voice_info = TTS_VOICES[self.tts_config.voice]
+        quality_info = AUDIO_QUALITY[self.tts_config.quality]
+        rate_info = SPEECH_RATES[self.tts_config.speech_rate]
+
+        logger.info(f"🎙️  TTS Settings:")
+        logger.info(f"   Voice: {voice_info['name']} ({voice_info['description']})")
+        logger.info(f"   Quality: {quality_info['name']} ({quality_info['bitrate']})")
+        logger.info(f"   Speed: {rate_info['name']} ({rate_info['value']})\n")
 
         self.results: List[ProcessingResult] = []
         self.total_api_calls = 0
@@ -284,8 +385,14 @@ Giữ [số] ở đầu mỗi đoạn.
     def generate_vietnamese_audio(
         self, srt_path: Path, audio_output_dir: Path
     ) -> bool:
-        """Generate Vietnamese audio using edge-tts"""
-        logger.info(f"🎙️ Sinh giọng tiếng Việt (edge-tts HoaiMyNeural)")
+        """Generate Vietnamese audio using edge-tts with configured voice & quality"""
+        voice_info = TTS_VOICES[self.tts_config.voice]
+        rate_info = SPEECH_RATES[self.tts_config.speech_rate]
+        quality_info = AUDIO_QUALITY[self.tts_config.quality]
+
+        logger.info(
+            f"🎙️ Sinh giọng tiếng Việt ({voice_info['name']}, {quality_info['bitrate']})"
+        )
 
         try:
             import edge_tts
@@ -298,19 +405,56 @@ Giữ [số] ở đầu mỗi đoạn.
                 for sub in tqdm(srt_list, desc="Generating audio", colour="blue"):
                     audio_path = audio_output_dir / f"{sub.index}.mp3"
 
+                    # Generate with configured voice & speed
                     communicate = edge_tts.Communicate(
                         text=sub.text,
-                        voice="vi-VN-HoaiMyNeural",
-                        rate="+0%",
+                        voice=voice_info["code"],
+                        rate=rate_info["value"],
                     )
                     await communicate.save(str(audio_path))
 
+                    # Convert to configured quality if needed
+                    if self.tts_config.quality != "high":
+                        self._convert_audio_quality(audio_path)
+
             asyncio.run(generate_audio())
-            logger.info(f"✓ Vietnamese audio generated")
+            logger.info(
+                f"✓ Vietnamese audio generated ({len(srt_list)} segments)"
+            )
             return True
 
         except Exception as e:
             logger.error(f"✗ Audio generation failed: {e}")
+            return False
+
+    def _convert_audio_quality(self, audio_path: Path) -> bool:
+        """Convert audio to configured quality using FFmpeg"""
+        try:
+            quality_info = AUDIO_QUALITY[self.tts_config.quality]
+            temp_path = audio_path.parent / f"{audio_path.stem}_temp.mp3"
+
+            cmd = [
+                "ffmpeg",
+                "-i",
+                str(audio_path),
+                "-b:a",
+                quality_info["bitrate"],
+                "-ar",
+                quality_info["sample_rate"],
+                "-n",
+                str(temp_path),
+            ]
+
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=60, check=True
+            )
+
+            # Replace original with converted
+            temp_path.replace(audio_path)
+            return True
+
+        except Exception as e:
+            logger.warning(f"Audio quality conversion skipped: {e}")
             return False
 
     def mix_audio_and_burn_subtitles(
@@ -476,6 +620,8 @@ Giữ [số] ở đầu mỗi đoạn.
                 processing_time=format_duration(processing_time),
                 api_calls=api_calls,
                 estimated_cost_usd=estimated_cost,
+                tts_voice=self.tts_config.voice,
+                audio_quality=self.tts_config.quality,
             )
 
         except Exception as e:
@@ -485,6 +631,8 @@ Giữ [số] ở đầu mỗi đoạn.
                 status="failed",
                 input_url=url,
                 error=str(e),
+                tts_voice=self.tts_config.voice,
+                audio_quality=self.tts_config.quality,
             )
 
     def process_batch(self, urls_file: str) -> None:
@@ -573,6 +721,11 @@ Giữ [số] ở đầu mỗi đoạn.
             "total_estimated_cost_usd": round(total_cost, 4),
             "api_provider": "Google Gemini 1.5 Flash",
             "cost_vs_claude": f"45x cheaper than Anthropic Claude",
+            "tts_settings": {
+                "voice": TTS_VOICES[self.tts_config.voice]["name"],
+                "quality": AUDIO_QUALITY[self.tts_config.quality]["name"],
+                "speed": SPEECH_RATES[self.tts_config.speech_rate]["name"],
+            },
             "results": [asdict(r) for r in self.results],
         }
 
@@ -589,6 +742,58 @@ Giữ [số] ở đầu mỗi đoạn.
         logger.info(f"  💾 Report: {report_path}")
 
 
+def configure_tts():
+    """Interactive TTS configuration"""
+    print("\n" + "=" * 60)
+    print("🎙️  TTS CONFIGURATION")
+    print("=" * 60 + "\n")
+
+    config = TTSConfig.load()
+
+    # Voice selection
+    print("📢 Select Voice:")
+    for i, (key, info) in enumerate(TTS_VOICES.items(), 1):
+        marker = "✓" if key == config.voice else " "
+        print(f"  [{marker}] {i}. {info['name']}")
+        print(f"       {info['description']}\n")
+
+    choice = input("Enter choice (1-2) [default: 1]: ").strip() or "1"
+    voices_list = list(TTS_VOICES.keys())
+    if choice.isdigit() and 1 <= int(choice) <= len(voices_list):
+        config.voice = voices_list[int(choice) - 1]
+
+    # Quality selection
+    print("\n📊 Select Audio Quality:")
+    for i, (key, info) in enumerate(AUDIO_QUALITY.items(), 1):
+        marker = "✓" if key == config.quality else " "
+        print(f"  [{marker}] {i}. {info['name']}")
+        print(f"       {info['description']} (Sample: {info['sample_rate']}Hz)\n")
+
+    choice = input("Enter choice (1-3) [default: 2]: ").strip() or "2"
+    quality_list = list(AUDIO_QUALITY.keys())
+    if choice.isdigit() and 1 <= int(choice) <= len(quality_list):
+        config.quality = quality_list[int(choice) - 1]
+
+    # Speech rate selection
+    print("\n⏱️  Select Speech Rate:")
+    for i, (key, info) in enumerate(SPEECH_RATES.items(), 1):
+        marker = "✓" if key == config.speech_rate else " "
+        print(f"  [{marker}] {i}. {info['name']}")
+        print(f"       {info['description']}\n")
+
+    choice = input("Enter choice (1-3) [default: 2]: ").strip() or "2"
+    rate_list = list(SPEECH_RATES.keys())
+    if choice.isdigit() and 1 <= int(choice) <= len(rate_list):
+        config.speech_rate = rate_list[int(choice) - 1]
+
+    # Save
+    config.save()
+
+    print("\n" + "=" * 60)
+    print("✅ Configuration saved!")
+    print("=" * 60 + "\n")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Douyin → Vietnamese Video Pipeline (with Google Gemini)",
@@ -598,6 +803,7 @@ def main():
   %(prog)s batch urls.txt
   %(prog)s preview https://www.douyin.com/video/...
   %(prog)s translate transcript.srt
+  %(prog)s config  # Configure TTS voice & quality
         """,
     )
 
@@ -619,27 +825,36 @@ def main():
     translate_parser = subparsers.add_parser("translate", help="Translate SRT file")
     translate_parser.add_argument("srt_file", help="Path to SRT file")
 
+    # Config command
+    config_parser = subparsers.add_parser(
+        "config", help="Configure TTS voice & quality"
+    )
+
     args = parser.parse_args()
 
     try:
-        pipeline = DouyinPipeline()
-
-        if args.command == "single":
-            result = pipeline.process_single(args.url)
-            pipeline.results.append(result)
-            pipeline._generate_report()
-
-        elif args.command == "batch":
-            pipeline.process_batch(args.urls_file)
-
-        elif args.command == "preview":
-            pipeline.preview(args.url)
-
-        elif args.command == "translate":
-            pipeline.translate_file(args.srt_file)
+        if args.command == "config":
+            configure_tts()
 
         else:
-            parser.print_help()
+            pipeline = DouyinPipeline()
+
+            if args.command == "single":
+                result = pipeline.process_single(args.url)
+                pipeline.results.append(result)
+                pipeline._generate_report()
+
+            elif args.command == "batch":
+                pipeline.process_batch(args.urls_file)
+
+            elif args.command == "preview":
+                pipeline.preview(args.url)
+
+            elif args.command == "translate":
+                pipeline.translate_file(args.srt_file)
+
+            else:
+                parser.print_help()
 
     except KeyboardInterrupt:
         logger.info("\n⚠️  Process interrupted by user")
